@@ -121,3 +121,5 @@ python3 main.py
 ## 感谢以下项目
 
 * 本项目的核心 API 交互逻辑（`skland_api.py`）提取自 AstrBot 的开源插件 [astrbot_plugin_skland](https://github.com/Azincc/astrbot_plugin_skland)
+
+## 2333
