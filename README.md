@@ -22,7 +22,7 @@ cp config.example.yaml config.yaml
 
 ### 1. 填写用户信息
 
-在 `users` 列表下填写账号昵称和 Token。
+在 `users` 列表下填写账号昵称和 Token。(格式详见comfig.example.yaml)
 
 **如何获取 Token：**
 
