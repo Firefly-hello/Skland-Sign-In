@@ -12,8 +12,10 @@ logger = logging.getLogger("notifier")
 class NotifierManager:
     """统一通知管理器，根据配置自动选择可用的推送渠道"""
 
-    def __init__(self, config: dict):
+        def __init__(self, config: dict):
         self.notifiers = []
+        # 仅在任务失败时推送的渠道（"失败才发邮件"）
+        self.failure_only_notifiers = []
         notify_cfg = config.get("notify", {})
 
         # 兼容老版本的 qmsg_key 配置
@@ -32,7 +34,12 @@ class NotifierManager:
             email_cfg = notify_cfg["email"]
             # 强制将密码转为字符串，防止纯数字密码报错
             email_cfg["password"] = str(email_cfg.get("password", ""))
-            self.notifiers.append(EmailNotifier(email_cfg))
+                        email_notifier = EmailNotifier(email_cfg)
+            # only_on_failure: true 时，仅当本次任务存在失败才推送
+        if email_cfg.get("only_on_failure"):
+            self.failure_only_notifiers.append(email_notifier)
+        else:
+            self.notifiers.append(email_notifier)
 
         if notify_cfg.get("wecom", {}).get("webhook_url"):
             self.notifiers.append(WeComNotifier(notify_cfg["wecom"]))
@@ -59,20 +66,22 @@ class NotifierManager:
         if custom_webhook_cfg.get("url"):
             self.notifiers.append(CustomWebhookNotifier(custom_webhook_cfg))    
 
-        if not self.notifiers:
+        if not self.notifiers and not self.failure_only_notifiers:
             logger.info("未配置任何通知渠道，跳过推送")
 
-    async def send_all(self, message: str):
-        """向所有已启用的渠道发送通知"""
-        if not self.notifiers:
-            return
+    async def send_all(self, message: str, has_failure: bool = False):
+        """向所有已启用的渠道发送通知；has_failure=True 时额外推送"仅失败"渠道"""
+        targets = list(self.notifiers)
+        if has_failure:
+            targets += self.failure_only_notifiers
+        elif self.failure_only_notifiers:
+            logger.info("本次任务无失败，跳过仅在失败时推送的渠道")
 
-        for notifier in self.notifiers:
+        for notifier in targets:
             try:
                 await notifier.send(message)
             except Exception as e:
                 logger.error(f"[{notifier.name}] 推送异常: {e}")
-
 
 class BaseNotifier:
     """通知基类"""
@@ -185,7 +194,7 @@ class EmailNotifier(BaseNotifier):
         self.username = cfg["username"]
         self.password = cfg["password"]
         self.sender = cfg.get("sender", self.username)
-        self.receiver = cfg["receiver"]
+        self.subject = cfg.get("subject") or "森空岛签到通知"
 
     async def send(self, message: str) -> bool:
         # 邮件是同步操作，用 asyncio 包装
@@ -198,7 +207,7 @@ class EmailNotifier(BaseNotifier):
             msg = MIMEMultipart()
             msg["From"] = self.sender
             msg["To"] = self.receiver
-            msg["Subject"] = "森空岛签到通知"
+            msg["Subject"] = self.subject
 
             # 将换行转为 HTML <br> 以保持格式
             html_body = message.replace("\n", "<br>")
