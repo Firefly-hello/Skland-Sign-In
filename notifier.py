@@ -12,7 +12,7 @@ logger = logging.getLogger("notifier")
 class NotifierManager:
     """统一通知管理器，根据配置自动选择可用的推送渠道"""
 
-        def __init__(self, config: dict):
+    def __init__(self, config: dict):
         self.notifiers = []
         # 仅在任务失败时推送的渠道（"失败才发邮件"）
         self.failure_only_notifiers = []
@@ -34,12 +34,12 @@ class NotifierManager:
             email_cfg = notify_cfg["email"]
             # 强制将密码转为字符串，防止纯数字密码报错
             email_cfg["password"] = str(email_cfg.get("password", ""))
-                        email_notifier = EmailNotifier(email_cfg)
+            email_notifier = EmailNotifier(email_cfg)
             # only_on_failure: true 时，仅当本次任务存在失败才推送
-        if email_cfg.get("only_on_failure"):
-            self.failure_only_notifiers.append(email_notifier)
-        else:
-            self.notifiers.append(email_notifier)
+            if email_cfg.get("only_on_failure"):
+                self.failure_only_notifiers.append(email_notifier)
+            else:
+                self.notifiers.append(email_notifier)
 
         if notify_cfg.get("wecom", {}).get("webhook_url"):
             self.notifiers.append(WeComNotifier(notify_cfg["wecom"]))
@@ -82,6 +82,7 @@ class NotifierManager:
                 await notifier.send(message)
             except Exception as e:
                 logger.error(f"[{notifier.name}] 推送异常: {e}")
+
 
 class BaseNotifier:
     """通知基类"""
@@ -194,6 +195,7 @@ class EmailNotifier(BaseNotifier):
         self.username = cfg["username"]
         self.password = cfg["password"]
         self.sender = cfg.get("sender", self.username)
+        self.receiver = cfg["receiver"]
         self.subject = cfg.get("subject") or "森空岛签到通知"
 
     async def send(self, message: str) -> bool:
@@ -547,4 +549,4 @@ class CustomWebhookNotifier(BaseNotifier):
                     return False
             except Exception as e:
                 logger.error(f"[CustomWebhook] 推送异常: {e}")
-                return False                
+                return False
