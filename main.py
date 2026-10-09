@@ -3,6 +3,7 @@ import asyncio
 import yaml
 import logging
 import random
+import sys  # 【新增】用于失败时返回非 0 退出码
 from skland_api import SklandAPI
 from notifier import NotifierManager
 
@@ -17,7 +18,7 @@ async def run_sign_in():
             config = yaml.safe_load(f)
     except FileNotFoundError:
         logger.error("找不到 config.yaml 文件")
-        return
+        sys.exit(1)  # 【新增】原来是 return，改成非 0 退出码
 
     # 2. 日志等级控制
     user_log_level = config.get("log_level", "info").lower()
@@ -30,7 +31,7 @@ async def run_sign_in():
 
     if not users:
         logger.warning("配置中没有发现用户信息")
-        return
+        sys.exit(1)  # 【新增】原来是 return
 
     # ================== 【新增：全局随机延时防风控】 ==================
     # 获取配置，未配置或格式错误则默认 120 秒
@@ -57,6 +58,11 @@ async def run_sign_in():
     # 3. 准备消息头部
     # 格式要求: 📅 森空岛签到姬
     notify_lines = ["📅 森空岛签到姬", ""] # 空字符串用于换行
+
+    # 【新增】本次任务是否出现失败的开关，初始为"没有失败"
+    #   成功路径：保持 False -> 不发失败邮件、退出码 0
+    #   失败路径：置为 True   -> 发邮件、退出码 1
+    has_failure = False
     
     logger.info(f"开始执行签到任务，共 {len(users)} 个账号")
     
@@ -80,12 +86,13 @@ async def run_sign_in():
         error_msg = "❌ 致命错误: 连续 3 次无法获取设备指纹 (可能触发风控)，本次签到任务已全部取消。"
         logger.error(error_msg)
         notify_lines.append(error_msg)
-        
+        has_failure = True  # 【新增】标记为失败
+
         # 发送失败通知并退出
         final_message = "\n".join(notify_lines)
-        await notifier.send_all(final_message)
+        await notifier.send_all(final_message, has_failure=True)  # 【新增】传 has_failure=True
         await api.close()
-        return
+        sys.exit(1)  # 【新增】原来是 return，改成非 0 退出码
     # ==================================================================
 
     # 遍历用户，使用 enumerate 获取序号 (从1开始)
@@ -106,6 +113,7 @@ async def run_sign_in():
             logger.error(f"  [{nickname_cfg}] 未配置 Token")
             notify_lines.append("❌ 账号配置错误: 缺少Token")
             notify_lines.append("") 
+            has_failure = True  # 【新增】账号配置错误也算失败
             continue
             
         try:
@@ -115,6 +123,7 @@ async def run_sign_in():
             if not results:
                 notify_lines.append("❌ 未找到绑定角色")
                 logger.warning(f"  [{nickname_cfg}] 未找到角色")
+                has_failure = True  # 【新增】没找到角色也算失败
             
             for r in results:
                 # 状态判定逻辑
@@ -123,6 +132,10 @@ async def run_sign_in():
                 # 失败 -> ❌, 失败 (原因)
                 
                 is_signed_already = not r.success and any(k in r.error for k in ["已签到", "重复", "already"])
+
+                # 【新增】真正的失败（排除"今日已签到"）才置为 True
+                if not r.success and not is_signed_already:
+                    has_failure = True
                 
                 if r.success:
                     icon = "✅"
@@ -149,6 +162,7 @@ async def run_sign_in():
             error_msg = str(e)
             logger.error(f"  [{nickname_cfg}] 异常: {error_msg}")
             notify_lines.append(f"❌ 系统错误: {error_msg}")
+            has_failure = True  # 【新增】账号级异常也算失败
 
         # 每个用户结束后加个空行，美观
         notify_lines.append("")
@@ -160,12 +174,35 @@ async def run_sign_in():
         notify_lines.pop()
 
     final_message = "\n".join(notify_lines)
-    await notifier.send_all(final_message)
+    # 【新增】把本次是否有失败告诉通知管理器：
+    #   has_failure=False -> 只推给普通渠道（"仅失败"的邮件会被跳过）
+    #   has_failure=True  -> 额外推送"仅失败"渠道（也就是发邮件）
+    await notifier.send_all(final_message, has_failure=has_failure)
         
     logger.info("所有任务已完成")
+
+    # 【新增】有失败则以退出码 1 结束，让 GitHub Actions 任务变红
+    if has_failure:
+        sys.exit(1)
 
 # 补充缺失的常量定义 (防止上面代码报错)
 WARNING = logging.WARNING
 
+# 【新增】崩溃兜底：
+# 上面所有邮件都依赖脚本能跑到 send_all；若出现未捕获异常（YAML 语法错、依赖缺失等），
+# 这里兜底发一封失败邮件，并同样以退出码 1 结束，避免"失败却没有任何通知"。
 if __name__ == "__main__":
-    asyncio.run(run_sign_in())
+    try:
+        asyncio.run(run_sign_in())
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.exception("脚本未捕获异常，尝试发送失败通知")
+        try:
+            with open("config.yaml", "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            msg = f"📅 森空岛签到姬\n\n❌ 脚本异常退出: {type(e).__name__}: {e}"
+            asyncio.run(NotifierManager(cfg).send_all(msg, has_failure=True))
+        except Exception as inner:
+            logger.error(f"发送失败通知时再次出错: {inner}")
+        sys.exit(1)
